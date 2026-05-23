@@ -15,7 +15,7 @@
  with the default scale (`1`) and the default size (`24`).
 
  ```rust
- use freedesktop_icons::lookup;
+ use nix_freedesktop_icons::lookup;
 
  let icon = lookup("firefox").find();
 ```
@@ -25,7 +25,7 @@
  If you have specific requirements for your lookup you can use the provided builder functions:
 
  ```rust
- use freedesktop_icons::lookup;
+ use nix_freedesktop_icons::lookup;
 
  let icon = lookup("firefox")
      .with_size(48)
@@ -39,7 +39,7 @@
  you can use the internal cache to improve performance.
 
  ```rust
- use freedesktop_icons::lookup;
+ use nix_freedesktop_icons::lookup;
 
  let icon = lookup("firefox")
      .with_size(48)

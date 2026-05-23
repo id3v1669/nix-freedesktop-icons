@@ -13,7 +13,7 @@
 //!
 //! ```rust
 //! # fn main() {
-//! use freedesktop_icons::lookup;
+//! use nix_freedesktop_icons::lookup;
 //!
 //! let icon = lookup("firefox").find();
 //! # }
@@ -25,7 +25,7 @@
 //!
 //! ```rust
 //! # fn main() {
-//! use freedesktop_icons::lookup;
+//! use nix_freedesktop_icons::lookup;
 //!
 //! let icon = lookup("firefox")
 //!     .with_size(48)
@@ -41,7 +41,7 @@
 //!
 //! ```rust
 //! # fn main() {
-//! use freedesktop_icons::lookup;
+//! use nix_freedesktop_icons::lookup;
 //!
 //! let icon = lookup("firefox")
 //!     .with_size(48)
@@ -66,7 +66,7 @@ mod theme;
 /// ## Example
 /// ```rust,no_run
 /// # fn main() {
-/// use freedesktop_icons::list_themes;
+/// use nix_freedesktop_icons::list_themes;
 ///
 /// let themes: Vec<String> = list_themes();
 ///
@@ -108,7 +108,7 @@ pub fn list_themes() -> Vec<String> {
 ///
 /// ## Example
 /// ```rust, no_run
-/// use freedesktop_icons::default_theme_gtk;
+/// use nix_freedesktop_icons::default_theme_gtk;
 ///
 /// let theme = default_theme_gtk();
 ///
@@ -169,7 +169,7 @@ pub struct LookupBuilder<'a> {
 /// ## Example
 /// ```rust
 /// # fn main() {
-/// use freedesktop_icons::lookup;
+/// use nix_freedesktop_icons::lookup;
 ///
 /// let icon = lookup("firefox").find();
 /// # }
@@ -183,7 +183,7 @@ impl<'a> LookupBuilder<'a> {
     /// ## Example
     /// ```rust
     /// # fn main() {
-    /// use freedesktop_icons::lookup;
+    /// use nix_freedesktop_icons::lookup;
     ///
     /// let icon = lookup("firefox")
     ///     .with_size(48)
@@ -199,7 +199,7 @@ impl<'a> LookupBuilder<'a> {
     /// ## Example
     /// ```rust
     /// # fn main() {
-    /// use freedesktop_icons::lookup;
+    /// use nix_freedesktop_icons::lookup;
     ///
     /// let icon = lookup("firefox")
     ///     .with_scale(2)
@@ -214,7 +214,7 @@ impl<'a> LookupBuilder<'a> {
     /// ## Example
     /// ```rust
     /// # fn main() {
-    /// use freedesktop_icons::lookup;
+    /// use nix_freedesktop_icons::lookup;
     ///
     /// let icon = lookup("firefox")
     ///     .with_theme("Papirus")
@@ -233,7 +233,7 @@ impl<'a> LookupBuilder<'a> {
     /// ## Example
     /// ```rust
     /// # fn main() {
-    /// use freedesktop_icons::lookup;
+    /// use nix_freedesktop_icons::lookup;
     ///
     /// let icon = lookup("firefox")
     ///     .with_scale(2)
@@ -252,7 +252,7 @@ impl<'a> LookupBuilder<'a> {
     /// ## Example
     /// ```rust
     /// # fn main() {
-    /// use freedesktop_icons::lookup;
+    /// use nix_freedesktop_icons::lookup;
     ///
     /// let icon = lookup("firefox")
     ///     .force_svg()
@@ -296,6 +296,10 @@ impl<'a> LookupBuilder<'a> {
         // Then lookup in the given theme
         THEMES
             .get(self.theme)
+            .or_else(|| {
+                let normalized = self.theme.replace(' ', "-");
+                THEMES.get(&normalized)
+            })
             .or_else(|| THEMES.get("hicolor"))
             .and_then(|icon_themes| {
                 let icon = icon_themes
