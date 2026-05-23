@@ -51,10 +51,12 @@
 //!     .find();
 //! # }
 //! ```
+use memmap2::Mmap;
 use theme::BASE_PATHS;
 
 use crate::cache::{CACHE, CacheEntry};
-use crate::theme::{THEMES, try_build_icon_path};
+use crate::theme::{THEMES, Theme, try_build_icon_path};
+use std::hash::{Hash, Hasher};
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -81,8 +83,10 @@ pub fn list_themes() -> Vec<String> {
         .flatten()
         .map(|path| &path.index)
         .filter_map(|index| {
-            let file = std::fs::File::open(index).ok()?;
-            let mut reader = std::io::BufReader::new(file);
+            let file = std::fs::File::open(index)
+                .and_then(|file| unsafe { Mmap::map(&file) })
+                .ok()?;
+            let mut reader = std::io::Cursor::new(file.as_ref());
 
             let mut line = String::new();
             while let Ok(read) = reader.read_line(&mut line) {
@@ -128,10 +132,12 @@ pub fn default_theme_gtk() -> Option<String> {
     if gsettings.status.success() {
         let name = String::from_utf8(gsettings.stdout).ok()?;
         let name = name.trim().trim_matches('\'');
-        THEMES.get(name).and_then(|themes| {
+        THEMES.get(name.as_bytes()).and_then(|themes| {
             themes.first().and_then(|path| {
-                let file = std::fs::File::open(&path.index).ok()?;
-                let mut reader = std::io::BufReader::new(file);
+                let file = std::fs::File::open(&path.index)
+                    .and_then(|file| unsafe { Mmap::map(&file) })
+                    .ok()?;
+                let mut reader = std::io::Cursor::new(file.as_ref());
 
                 let mut line = String::new();
                 while let Ok(read) = reader.read_line(&mut line) {
@@ -287,72 +293,55 @@ impl<'a> LookupBuilder<'a> {
         // If cache is activated, attempt to get the icon there first
         // If the icon was previously search but not found, we return
         // `None` early, otherwise, attempt to perform a lookup
-        if self.cache
-            && let CacheEntry::Found(icon) = self.cache_lookup(self.theme)
-        {
-            return Some(icon);
+        if self.cache {
+            match self.cache_lookup(self.theme) {
+                CacheEntry::Found(icon) => return Some(icon),
+                CacheEntry::NotFound => return None,
+                _ => (),
+            }
         }
+
+        // Records theme paths that have already been searched.
+        let searched_themes = &mut Vec::new();
+        // Record themes whose inherits have been searched.
+        let search_inherits = &mut Vec::new();
 
         // Then lookup in the given theme
         THEMES
-            .get(self.theme)
+            .get(self.theme.as_bytes())
             .or_else(|| {
                 let normalized = self.theme.replace(' ', "-");
-                THEMES.get(&normalized)
+                THEMES.get(normalized.as_bytes())
             })
-            .or_else(|| THEMES.get("hicolor"))
+            .or_else(|| THEMES.get("hicolor".as_bytes()))
             .and_then(|icon_themes| {
                 let icon = icon_themes
                     .iter()
-                    .find_map(|theme| {
-                        theme.try_get_icon(self.name, self.size, self.scale, self.force_svg)
-                    })
+                    // Search the active icon themes
+                    .find_map(|theme| self.search_theme(searched_themes, theme))
+                    // Search the inherits of those icon themes
                     .or_else(|| {
-                        // Fallback to the parent themes recursively
-                        let mut parents = icon_themes
-                            .iter()
-                            .flat_map(|t| {
-                                let file = theme::read_ini_theme(&t.index);
-
-                                t.inherits(file.as_ref())
-                                    .into_iter()
-                                    .map(String::from)
-                                    .collect::<Vec<String>>()
-                            })
-                            .collect::<Vec<_>>();
-                        parents.dedup();
-                        parents.into_iter().find_map(|parent| {
-                            THEMES.get(&parent).and_then(|parent| {
-                                parent.iter().find_map(|t| {
-                                    t.try_get_icon(self.name, self.size, self.scale, self.force_svg)
-                                })
-                            })
+                        icon_themes.iter().find_map(|t| {
+                            self.search_theme_inherits(search_inherits, searched_themes, t)
                         })
                     })
-                    .or_else(|| {
-                        THEMES.get("hicolor").and_then(|icon_themes| {
-                            icon_themes.iter().find_map(|theme| {
-                                theme.try_get_icon(self.name, self.size, self.scale, self.force_svg)
-                            })
-                        })
-                    })
+                    // Search the hicolor icon theme if it was not previously searched
+                    .or_else(|| self.search_inherited_theme(searched_themes, b"hicolor"))
                     .or_else(|| {
                         for theme_base_dir in BASE_PATHS.iter() {
-                            if let Some(icon) =
-                                try_build_icon_path(self.name, theme_base_dir, self.force_svg)
-                            {
-                                return Some(icon);
+                            let mut path = theme_base_dir.clone();
+                            if try_build_icon_path(&mut path, self.name, self.force_svg) {
+                                return Some(path);
                             }
                         }
                         None
                     })
                     .or_else(|| {
-                        try_build_icon_path(self.name, "/usr/share/pixmaps", self.force_svg)
-                    })
-                    .or_else(|| {
                         let p = PathBuf::from(&self.name);
                         if let (Some(name), Some(parent)) = (p.file_stem(), p.parent()) {
-                            try_build_icon_path(&name.to_string_lossy(), parent, self.force_svg)
+                            let mut path = parent.to_path_buf();
+                            try_build_icon_path(&mut path, &name.to_string_lossy(), self.force_svg)
+                                .then_some(path)
                         } else {
                             None
                         }
@@ -375,6 +364,64 @@ impl<'a> LookupBuilder<'a> {
     fn store(&self, theme: &str, icon: Option<PathBuf>) -> Option<PathBuf> {
         CACHE.insert(theme, self.size, self.scale, self.name, &icon);
         icon
+    }
+
+    /// Search a theme by its path for a matching icon if not already searched.
+    fn search_theme(&self, searched_themes: &mut Vec<u64>, theme: &Theme) -> Option<PathBuf> {
+        // Store hash of the theme.
+        let theme_hash = {
+            let mut hasher = std::hash::DefaultHasher::new();
+            theme.path.0.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        if let Err(pos) = searched_themes.binary_search(&theme_hash) {
+            searched_themes.insert(pos, theme_hash);
+            return theme.try_get_icon(self.name, self.size, self.scale, self.force_svg);
+        }
+
+        None
+    }
+
+    // Search the inherits of a theme if not already searched.
+    fn search_theme_inherits(
+        &self,
+        search_inherits: &mut Vec<u64>,
+        searched_themes: &mut Vec<u64>,
+        theme: &Theme,
+    ) -> Option<PathBuf> {
+        // Store hash of the theme.
+        let theme_hash = {
+            let mut hasher = std::hash::DefaultHasher::new();
+            theme.path.0.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        if let Err(pos) = search_inherits.binary_search(&theme_hash) {
+            search_inherits.insert(pos, theme_hash);
+            let Ok(file) = theme::read_ini_theme(&theme.index) else {
+                return None;
+            };
+
+            // Search all inherited themes that we haven't already searched
+            return theme
+                .inherits(file.as_ref())
+                .find_map(|parent| self.search_inherited_theme(searched_themes, parent));
+        }
+
+        None
+    }
+
+    /// Search the inherits of a theme by its name if not already searched.
+    fn search_inherited_theme(
+        &self,
+        searched_themes: &mut Vec<u64>,
+        theme: &[u8],
+    ) -> Option<PathBuf> {
+        THEMES
+            .get(theme)?
+            .iter()
+            .find_map(|t| self.search_theme(searched_themes, t))
     }
 }
 

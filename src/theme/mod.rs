@@ -1,21 +1,20 @@
-use crate::theme::error::ThemeError;
 use crate::theme::paths::ThemePath;
+use memmap2::Mmap;
 use once_cell::sync::Lazy;
 pub(crate) use paths::BASE_PATHS;
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 mod directories;
-pub mod error;
 mod parse;
 mod paths;
 
-type Result<T> = std::result::Result<T, ThemeError>;
+pub static THEMES: Lazy<BTreeMap<Vec<u8>, Vec<Theme>>> = Lazy::new(get_all_themes);
 
-pub static THEMES: Lazy<BTreeMap<String, Vec<Theme>>> = Lazy::new(get_all_themes);
-
-pub fn read_ini_theme(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+#[inline]
+pub fn read_ini_theme(path: &Path) -> std::io::Result<Mmap> {
+    std::fs::File::open(path).and_then(|file| unsafe { Mmap::map(&file) })
 }
 
 #[derive(Debug)]
@@ -32,68 +31,104 @@ impl Theme {
         scale: u16,
         force_svg: bool,
     ) -> Option<PathBuf> {
-        let file = read_ini_theme(&self.index);
-        self.try_get_icon_exact_size(file.as_str(), name, size, scale, force_svg)
-            .or_else(|| self.try_get_icon_closest_size(file.as_str(), name, size, scale, force_svg))
+        let file = read_ini_theme(&self.index).ok()?;
+        self.try_get_icon_exact_size(file.as_ref(), name, size, scale, force_svg)
+            .or_else(|| self.try_get_icon_closest_size(file.as_ref(), name, size, scale, force_svg))
     }
 
     fn try_get_icon_exact_size(
         &self,
-        file: &str,
+        file: &[u8],
         name: &str,
         size: u16,
         scale: u16,
         force_svg: bool,
     ) -> Option<PathBuf> {
-        let dirs: Vec<PathBuf> = self.match_size(file, size, scale).collect();
-        pick_icon(name, &dirs, force_svg)
+        let dirs: Vec<&str> = self.match_size(file, size, scale).collect();
+        self.pick_icon(&dirs, name, force_svg)
     }
 
     fn match_size<'a>(
         &'a self,
-        file: &'a str,
+        file: &'a [u8],
         size: u16,
         scale: u16,
-    ) -> impl Iterator<Item = PathBuf> + 'a {
-        let dirs = self.get_all_directories(file);
-
-        dirs.filter(move |directory| directory.match_size(size, scale))
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.get_all_directories(file)
+            .filter(move |directory| directory.match_size(size, scale))
             .map(|dir| dir.name)
-            .map(|dir| self.path().join(dir))
     }
 
     fn try_get_icon_closest_size(
         &self,
-        file: &str,
+        file: &[u8],
         name: &str,
         size: u16,
         scale: u16,
         force_svg: bool,
     ) -> Option<PathBuf> {
-        pick_icon(name, &self.closest_match_size(file, size, scale), force_svg)
+        let dirs: Vec<&str> = self.closest_match_size(file, size, scale).collect();
+        self.pick_icon(&dirs, name, force_svg)
     }
 
-    fn closest_match_size(&self, file: &str, size: u16, scale: u16) -> Vec<PathBuf> {
-        let dirs = self.get_all_directories(file);
-
-        let mut dirs: Vec<_> = dirs
-            .filter_map(|directory| {
+    fn closest_match_size<'a>(
+        &'a self,
+        file: &'a [u8],
+        size: u16,
+        scale: u16,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.get_all_directories(file)
+            .fold(Vec::<(&'a str, i16)>::new(), |mut sorted, directory| {
                 let distance = directory.directory_size_distance(size, scale);
                 if distance < i16::MAX {
-                    Some((directory, distance.abs()))
-                } else {
-                    None
+                    let a = distance.abs();
+                    let pos = sorted
+                        .binary_search_by(|(_, b)| b.cmp(&a))
+                        .unwrap_or_else(|pos| pos);
+                    sorted.insert(pos, (directory.name, a));
                 }
+                sorted
             })
-            .collect();
+            .into_iter()
+            .map(|(name, _)| name)
+    }
 
-        dirs.sort_by_key(|(_, a)| *a);
+    /// Resolve `name` within the given size-matching `dirs` of this theme.
+    ///
+    /// The preferred extension (svg when `force_svg`, otherwise png) is searched
+    /// across *all* `dirs` before falling back to the next extension, so a
+    /// scalable svg is returned over a same-size raster png when requested.
+    /// A single `PathBuf` and name buffer are reused across every probe.
+    fn pick_icon(&self, dirs: &[&str], name: &str, force_svg: bool) -> Option<PathBuf> {
+        let exts: [&str; 3] = if force_svg {
+            [".svg", ".png", ".xmp"]
+        } else {
+            [".png", ".svg", ".xmp"]
+        };
 
-        dirs.iter()
-            .map(|(dir, _)| dir)
-            .map(|dir| dir.name)
-            .map(|dir| self.path().join(dir))
-            .collect()
+        let mut name_buf = String::with_capacity(name.len() + 4);
+        let mut path = self.path().clone();
+
+        for ext in exts {
+            name_buf.clear();
+            name_buf.push_str(name);
+            name_buf.push_str(ext);
+
+            for dir in dirs {
+                path.push(dir);
+                path.push(&name_buf);
+                if path.exists() {
+                    return Some(path);
+                }
+                // Restore `path` back to the theme base directory.
+                path.pop(); // file name
+                for _ in 0..dir.bytes().filter(|&c| c == b'/').count() + 1 {
+                    path.pop();
+                }
+            }
+        }
+
+        None
     }
 
     fn path(&self) -> &PathBuf {
@@ -101,57 +136,32 @@ impl Theme {
     }
 }
 
-fn pick_icon(name: &str, dirs: &[PathBuf], force_svg: bool) -> Option<PathBuf> {
-    let svg = || dirs.iter().find_map(|p| try_build_svg(name, p));
-    let png = || dirs.iter().find_map(|p| try_build_png(name, p));
-    let xmp = || dirs.iter().find_map(|p| try_build_xmp(name, p));
-
+pub(super) fn try_build_icon_path(path: &mut PathBuf, name: &str, force_svg: bool) -> bool {
+    let mut name_buf = String::with_capacity(name.len() + 4);
+    name_buf.push_str(name);
+    path.push(name);
     if force_svg {
-        svg().or_else(png).or_else(xmp)
+        try_build_ext(path, &mut name_buf, name, ".svg")
+            || try_build_ext(path, &mut name_buf, name, ".png")
+            || try_build_ext(path, &mut name_buf, name, ".xmp")
     } else {
-        png().or_else(svg).or_else(xmp)
+        try_build_ext(path, &mut name_buf, name, ".png")
+            || try_build_ext(path, &mut name_buf, name, ".svg")
+            || try_build_ext(path, &mut name_buf, name, ".xmp")
     }
 }
 
-pub(super) fn try_build_icon_path<P: AsRef<Path>>(
-    name: &str,
-    path: P,
-    force_svg: bool,
-) -> Option<PathBuf> {
-    if force_svg {
-        try_build_svg(name, path.as_ref())
-            .or_else(|| try_build_png(name, path.as_ref()))
-            .or_else(|| try_build_xmp(name, path.as_ref()))
-    } else {
-        try_build_png(name, path.as_ref())
-            .or_else(|| try_build_svg(name, path.as_ref()))
-            .or_else(|| try_build_xmp(name, path.as_ref()))
-    }
-}
-
-fn try_build_svg<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
-    let path = path.as_ref();
-    let svg = path.join(format!("{name}.svg"));
-
-    if svg.exists() { Some(svg) } else { None }
-}
-
-fn try_build_png<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
-    let path = path.as_ref();
-    let png = path.join(format!("{name}.png"));
-
-    if png.exists() { Some(png) } else { None }
-}
-
-fn try_build_xmp<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
-    let path = path.as_ref();
-    let xmp = path.join(format!("{name}.xmp"));
-    if xmp.exists() { Some(xmp) } else { None }
+#[inline]
+fn try_build_ext(path: &mut PathBuf, name_buf: &mut String, name: &str, ext: &'static str) -> bool {
+    name_buf.truncate(name.len());
+    name_buf.push_str(ext);
+    path.set_file_name(&name_buf);
+    path.exists()
 }
 
 // Iter through the base paths and get all theme directories
-pub(super) fn get_all_themes() -> BTreeMap<String, Vec<Theme>> {
-    let mut icon_themes = BTreeMap::<_, Vec<_>>::new();
+pub(super) fn get_all_themes() -> BTreeMap<Vec<u8>, Vec<Theme>> {
+    let mut icon_themes = BTreeMap::<Vec<u8>, Vec<_>>::new();
     let mut found_indices = BTreeMap::new();
     let mut to_revisit = Vec::new();
 
@@ -171,8 +181,10 @@ pub(super) fn get_all_themes() -> BTreeMap<String, Vec<Theme>> {
                 if fallback_index.is_none() {
                     found_indices.insert(name.clone(), theme.index.clone());
                 }
-                let name = name.to_string_lossy().to_string();
-                icon_themes.entry(name).or_default().push(theme);
+                icon_themes
+                    .entry(name.as_bytes().to_owned())
+                    .or_default()
+                    .push(theme);
             } else if entry.path().is_dir() {
                 to_revisit.push(entry);
             }
@@ -183,8 +195,10 @@ pub(super) fn get_all_themes() -> BTreeMap<String, Vec<Theme>> {
         let name = entry.file_name();
         let fallback_index = found_indices.get(&name);
         if let Some(theme) = Theme::from_path(entry.path(), fallback_index) {
-            let name = name.to_string_lossy().to_string();
-            icon_themes.entry(name).or_default().push(theme);
+            icon_themes
+                .entry(name.as_bytes().to_owned())
+                .or_default()
+                .push(theme);
         }
     }
 
@@ -193,24 +207,26 @@ pub(super) fn get_all_themes() -> BTreeMap<String, Vec<Theme>> {
 
 impl Theme {
     pub(crate) fn from_path<P: AsRef<Path>>(path: P, index: Option<&PathBuf>) -> Option<Self> {
-        let path = path.as_ref();
+        let mut path = path.as_ref().to_path_buf();
+        let is_dir = path.is_dir();
+        path.push("index.theme");
+        let local_index_exists = path.exists();
+        let has_index = local_index_exists || index.is_some();
 
-        let has_index = path.join("index.theme").exists() || index.is_some();
-
-        if !has_index || !path.is_dir() {
+        if !has_index || !is_dir {
             return None;
         }
 
-        let path = ThemePath(path.into());
-
-        match (index, path.index()) {
-            (Some(index), _) => Some(Theme {
-                path,
-                index: index.clone(),
-            }),
-            (None, Ok(index)) => Some(Theme { path, index }),
-            _ => None,
-        }
+        index
+            .cloned()
+            .or_else(|| local_index_exists.then_some(path.clone()))
+            .map(|index| Theme {
+                path: ThemePath({
+                    path.pop();
+                    path
+                }),
+                index,
+            })
     }
 }
 
@@ -220,22 +236,22 @@ mod test {
 
     #[test]
     fn get_one_icon() {
-        let themes = THEMES.get("Adwaita").unwrap();
+        let themes = THEMES.get(&b"Adwaita"[..]).unwrap();
         println!(
             "{:?}",
             themes.iter().find_map(|t| {
-                let file = crate::theme::read_ini_theme(&t.index);
-                t.try_get_icon_exact_size(file.as_str(), "edit-delete-symbolic", 24, 1, false)
+                let file = super::read_ini_theme(&t.index).ok()?;
+                t.try_get_icon_exact_size(file.as_ref(), "edit-delete-symbolic", 24, 1, false)
             })
         );
     }
 
     #[test]
     fn should_get_png() {
-        let themes = THEMES.get("hicolor").unwrap();
+        let themes = THEMES.get(&b"hicolor"[..]).unwrap();
         let icon = themes.iter().find_map(|t| {
-            let file = crate::theme::read_ini_theme(&t.index);
-            t.try_get_icon_exact_size(file.as_str(), "blueman", 24, 1, false)
+            let file = super::read_ini_theme(&t.index).ok()?;
+            t.try_get_icon_exact_size(file.as_ref(), "blueman", 24, 1, false)
         });
         assert!(
             icon.as_ref()
@@ -245,10 +261,10 @@ mod test {
 
     #[test]
     fn should_get_svg() {
-        let themes = THEMES.get("hicolor").unwrap();
+        let themes = THEMES.get(&b"hicolor"[..]).unwrap();
         let icon = themes.iter().find_map(|t| {
-            let file = crate::theme::read_ini_theme(&t.index);
-            t.try_get_icon_exact_size(file.as_str(), "blueman", 24, 1, true)
+            let file = super::read_ini_theme(&t.index).ok()?;
+            t.try_get_icon_exact_size(file.as_ref(), "blueman", 24, 1, true)
         });
         assert!(
             icon.as_ref()

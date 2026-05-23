@@ -28,29 +28,29 @@ impl Directory<'_> {
     }
 
     pub fn directory_size_distance(&self, size: u16, scale: u16) -> i16 {
-        let scaled_size = self.size * self.scale;
-        let min_scaled_size = self.minsize * self.scale;
-        let max_scaled_size = self.maxsize * self.scale;
         let scale = scale as i16;
-        let size = size as i16;
-        let scaled_requested_size = size * scale;
+        let scaled_requested_size = size as i16 * scale;
 
         match self.type_ {
-            DirectoryType::Fixed => scaled_size - scaled_requested_size,
+            DirectoryType::Fixed => self.size * self.scale - scaled_requested_size,
             DirectoryType::Scalable => {
+                let min_scaled_size = self.minsize * self.scale;
                 if scaled_requested_size < min_scaled_size {
                     min_scaled_size - scaled_requested_size
-                } else if scaled_requested_size < max_scaled_size {
-                    scaled_requested_size - max_scaled_size
                 } else {
-                    0
+                    let max_scaled_size = self.maxsize * self.scale;
+                    if scaled_requested_size < max_scaled_size {
+                        scaled_requested_size - max_scaled_size
+                    } else {
+                        0
+                    }
                 }
             }
             DirectoryType::Threshold => {
                 if scaled_requested_size < (self.size - self.threshold) * scale {
-                    min_scaled_size - scaled_requested_size
+                    self.minsize * self.scale - scaled_requested_size
                 } else if scaled_requested_size > (self.size + self.threshold) * scale {
-                    scaled_requested_size - max_scaled_size
+                    scaled_requested_size - self.maxsize * self.scale
                 } else {
                     0
                 }
@@ -67,11 +67,11 @@ pub enum DirectoryType {
     Threshold,
 }
 
-impl From<&str> for DirectoryType {
-    fn from(value: &str) -> Self {
-        match value {
-            "Fixed" => DirectoryType::Fixed,
-            "Scalable" => DirectoryType::Scalable,
+impl From<&[u8]> for DirectoryType {
+    fn from(value: &[u8]) -> Self {
+        match value.first() {
+            Some(b'F') => DirectoryType::Fixed,
+            Some(b'S') => DirectoryType::Scalable,
             _ => DirectoryType::Threshold,
         }
     }
