@@ -108,6 +108,7 @@ impl Theme {
 
         let mut name_buf = String::with_capacity(name.len() + 4);
         let mut path = self.path().clone();
+        let base_components = path.components().count();
 
         for ext in exts {
             name_buf.clear();
@@ -121,8 +122,7 @@ impl Theme {
                     return Some(path);
                 }
                 // Restore `path` back to the theme base directory.
-                path.pop(); // file name
-                for _ in 0..dir.bytes().filter(|&c| c == b'/').count() + 1 {
+                for _ in base_components..path.components().count() {
                     path.pop();
                 }
             }
@@ -137,18 +137,18 @@ impl Theme {
 }
 
 pub(super) fn try_build_icon_path(path: &mut PathBuf, name: &str, force_svg: bool) -> bool {
+    let exts: [&'static str; 3] = if force_svg {
+        [".svg", ".png", ".xmp"]
+    } else {
+        [".png", ".svg", ".xmp"]
+    };
+
     let mut name_buf = String::with_capacity(name.len() + 4);
     name_buf.push_str(name);
     path.push(name);
-    if force_svg {
-        try_build_ext(path, &mut name_buf, name, ".svg")
-            || try_build_ext(path, &mut name_buf, name, ".png")
-            || try_build_ext(path, &mut name_buf, name, ".xmp")
-    } else {
-        try_build_ext(path, &mut name_buf, name, ".png")
-            || try_build_ext(path, &mut name_buf, name, ".svg")
-            || try_build_ext(path, &mut name_buf, name, ".xmp")
-    }
+
+    exts.into_iter()
+        .any(|ext| try_build_ext(path, &mut name_buf, name, ext))
 }
 
 #[inline]

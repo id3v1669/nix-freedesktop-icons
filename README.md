@@ -1,4 +1,4 @@
- # freedesktop-icons
+ # nix-freedesktop-icons
 ![crates.io-badge](https://img.shields.io/crates/v/freedesktop-icons)
 ![docrs-badge](https://img.shields.io/docsrs/freedesktop-icons)
 

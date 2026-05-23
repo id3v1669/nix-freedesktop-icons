@@ -82,7 +82,7 @@ impl Theme {
                 BStr::new(parents)
                     .split(|&char| char == b',')
                     // Filtering out 'hicolor' since we are going to fallback there anyway
-                    .filter(|parent| parent != &b"hicolor")
+                    .filter(|parent| parent != b"hicolor")
             })
     }
 }
@@ -99,6 +99,7 @@ fn sections(file: &[u8]) -> impl Iterator<Item = DirectorySection<'_>> {
     let mut table_found = false;
     let mut section: &[u8] = b"";
     let mut prev = 0;
+    let mut tail_done = false;
     let mut line_indices = memchr::memchr_iter(b'\n', file);
 
     std::iter::from_fn(move || {
@@ -113,28 +114,33 @@ fn sections(file: &[u8]) -> impl Iterator<Item = DirectorySection<'_>> {
         }
 
         loop {
-            let line_pos = match line_indices.next() {
+            let line_end = match line_indices.next() {
                 Some(pos) => pos,
+                None if !tail_done && prev < file.len() => {
+                    tail_done = true;
+                    file.len()
+                }
                 None => {
-                    let value = if !finished {
-                        Some(DirectorySection::EndSection)
-                    } else {
-                        None
-                    };
                     finished = true;
-                    return value;
+                    return Some(DirectorySection::EndSection);
                 }
             };
 
-            let line = BStr::new(&file[prev..line_pos]).trim_ascii();
-            prev = line_pos + 1;
+            let line = BStr::new(&file[prev..line_end]).trim_ascii();
+            prev = line_end + 1;
 
             if line.is_empty() {
                 continue;
             }
 
             if line[0] == b'[' {
-                section = &line[1..line.len() - 1];
+                let Some(new_section) = line
+                    .strip_prefix(b"[")
+                    .and_then(|rest| rest.strip_suffix(b"]"))
+                else {
+                    continue;
+                };
+                section = new_section;
                 if table_found {
                     return Some(DirectorySection::EndSection);
                 } else {
@@ -156,13 +162,21 @@ fn sections(file: &[u8]) -> impl Iterator<Item = DirectorySection<'_>> {
 fn icon_theme_section(file: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
     let mut found_table = false;
     let mut prev = 0;
+    let mut tail_done = false;
     let mut line_indices = memchr::memchr_iter(b'\n', file);
 
     std::iter::from_fn(move || {
         loop {
-            let line_pos = line_indices.next()?;
-            let line = BStr::new(&file[prev..line_pos]).trim_ascii();
-            prev = line_pos + 1;
+            let line_end = match line_indices.next() {
+                Some(pos) => pos,
+                None if !tail_done && prev < file.len() => {
+                    tail_done = true;
+                    file.len()
+                }
+                None => return None,
+            };
+            let line = BStr::new(&file[prev..line_end]).trim_ascii();
+            prev = line_end + 1;
 
             if line.is_empty() {
                 continue;
@@ -171,8 +185,11 @@ fn icon_theme_section(file: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ 
             if line[0] == b'[' {
                 if found_table {
                     return None;
-                } else {
-                    let section = &line[1..line.len() - 1];
+                }
+                if let Some(section) = line
+                    .strip_prefix(b"[")
+                    .and_then(|rest| rest.strip_suffix(b"]"))
+                {
                     found_table = section == b"Icon Theme";
                 }
             }
@@ -190,7 +207,50 @@ fn icon_theme_section(file: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ 
 #[cfg(test)]
 mod test {
     use crate::THEMES;
+    use crate::theme::Theme;
+    use crate::theme::paths::ThemePath;
     use speculoos::prelude::*;
+    use std::path::PathBuf;
+
+    fn fake_theme() -> Theme {
+        Theme {
+            path: ThemePath(PathBuf::from("/x")),
+            index: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn parses_last_directory_without_trailing_newline() {
+        let theme = fake_theme();
+        let file = b"[Icon Theme]\nName=X\n[48x48/apps]\nType=Fixed\nSize=48"; // no final '\n'
+        let dirs: Vec<(String, i16)> = theme
+            .get_all_directories(file)
+            .map(|d| (d.name.to_string(), d.size))
+            .collect();
+        assert!(
+            dirs.iter().any(|(n, s)| n == "48x48/apps" && *s == 48),
+            "expected 48x48/apps with size 48, got {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_section_header_is_skipped_without_panic() {
+        let theme = fake_theme();
+        let file = b"[Icon Theme]\nName=X\n[\nSize=99\n[16x16]\nSize=16\n";
+        let dirs: Vec<String> = theme
+            .get_all_directories(file)
+            .map(|d| d.name.to_string())
+            .collect();
+        assert!(dirs.iter().any(|n| n == "16x16"), "got {dirs:?}");
+    }
+
+    #[test]
+    fn inherits_without_trailing_newline() {
+        let theme = fake_theme();
+        let file = b"[Icon Theme]\nName=X\nInherits=Moka,Adwaita"; // no final '\n'
+        let parents: Vec<&[u8]> = theme.inherits(file).collect();
+        assert_eq!(parents, vec![&b"Moka"[..], &b"Adwaita"[..]]);
+    }
 
     #[test]
     fn should_get_theme_parents() {
