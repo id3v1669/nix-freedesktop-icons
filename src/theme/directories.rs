@@ -59,17 +59,12 @@ impl Directory<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum DirectoryType {
     Fixed,
     Scalable,
+    #[default]
     Threshold,
-}
-
-impl Default for DirectoryType {
-    fn default() -> Self {
-        Self::Threshold
-    }
 }
 
 impl From<&str> for DirectoryType {

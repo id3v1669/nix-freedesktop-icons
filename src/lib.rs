@@ -53,8 +53,8 @@
 //! ```
 use theme::BASE_PATHS;
 
-use crate::cache::{CacheEntry, CACHE};
-use crate::theme::{try_build_icon_path, THEMES};
+use crate::cache::{CACHE, CacheEntry};
+use crate::theme::{THEMES, try_build_icon_path};
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -173,7 +173,7 @@ pub struct LookupBuilder<'a> {
 ///
 /// let icon = lookup("firefox").find();
 /// # }
-pub fn lookup(name: &str) -> LookupBuilder {
+pub fn lookup(name: &str) -> LookupBuilder<'_> {
     LookupBuilder::new(name)
 }
 
@@ -287,10 +287,10 @@ impl<'a> LookupBuilder<'a> {
         // If cache is activated, attempt to get the icon there first
         // If the icon was previously search but not found, we return
         // `None` early, otherwise, attempt to perform a lookup
-        if self.cache {
-            if let CacheEntry::Found(icon) = self.cache_lookup(self.theme) {
-                return Some(icon);
-            }
+        if self.cache
+            && let CacheEntry::Found(icon) = self.cache_lookup(self.theme)
+        {
+            return Some(icon);
         }
 
         // Then lookup in the given theme
@@ -379,7 +379,7 @@ impl<'a> LookupBuilder<'a> {
 #[cfg(test)]
 #[cfg(feature = "local_tests")]
 mod test {
-    use crate::{lookup, CacheEntry, CACHE};
+    use crate::{CACHE, CacheEntry, lookup};
     use speculoos::prelude::*;
     use std::path::PathBuf;
 

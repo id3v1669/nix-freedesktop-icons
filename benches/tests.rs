@@ -1,7 +1,6 @@
-use freedesktop_icons::lookup;
 use gtk4::{IconLookupFlags, IconTheme, TextDirection};
+use nix_freedesktop_icons::lookup;
 use speculoos::prelude::*;
-use std::path::PathBuf;
 
 #[test]
 fn gtk_lookup() {
@@ -28,13 +27,13 @@ fn linicon() {
     // Current theme
     let lin_user_home = linicon::lookup_icon("user-home")
         .from_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .next();
 
     let user_home = lookup("user-home")
         .with_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .find();
 
@@ -42,27 +41,23 @@ fn linicon() {
         .that(&lin_user_home.unwrap())
         .is_ok()
         .map(|icon| &icon.path)
-        .is_equal_to(PathBuf::from(
-            "/usr/share/icons/Adwaita/24x24/places/user-home.png",
-        ));
+        .matches(|p| p.ends_with("share/icons/Adwaita/16x16/places/user-home.png"));
 
     asserting!("Our implementation should return the same result as linicon")
         .that(&user_home)
         .is_some()
-        .is_equal_to(PathBuf::from(
-            "/usr/share/icons/Adwaita/24x24/places/user-home.png",
-        ));
+        .matches(|p| p.ends_with("share/icons/Adwaita/16x16/places/user-home.png"));
 
     // Fallback to hicolor
     let lin_firefox = linicon::lookup_icon("firefox")
         .from_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .next();
 
     let firefox = lookup("firefox")
         .with_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .find();
 
@@ -70,36 +65,32 @@ fn linicon() {
         .that(&lin_firefox.unwrap())
         .is_ok()
         .map(|icon| &icon.path)
-        .is_equal_to(PathBuf::from(
-            "/usr/share/icons/hicolor/22x22/apps/firefox.png",
-        ));
+        .matches(|p| p.ends_with("share/icons/hicolor/16x16/apps/firefox.png"));
 
     asserting!("Our implementation should return the same result as linicon")
         .that(&firefox)
         .is_some()
-        .is_equal_to(PathBuf::from(
-            "/usr/share/icons/hicolor/22x22/apps/firefox.png",
-        ));
+        .matches(|p| p.ends_with("share/icons/hicolor/16x16/apps/firefox.png"));
 
     // pixmaps
-    let lin_archlinux = linicon::lookup_icon("archlinux-logo")
+    let lin_steam = linicon::lookup_icon("steam_tray_mono")
         .from_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .next();
 
-    let archlinux = lookup("archlinux-logo")
+    let steam = lookup("steam_tray_mono")
         .with_theme("Adwaita")
-        .with_size(24)
+        .with_size(16)
         .with_scale(1)
         .find();
 
     asserting!("Linicon fails to fallback to pixmaps")
-        .that(&lin_archlinux)
+        .that(&lin_steam)
         .is_none();
 
     asserting!("But we succeed")
-        .that(&archlinux)
+        .that(&steam)
         .is_some()
-        .is_equal_to(PathBuf::from("/usr/share/pixmaps/archlinux-logo.png"));
+        .matches(|p| p.ends_with("share/pixmaps/steam_tray_mono.png"));
 }

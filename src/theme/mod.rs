@@ -45,8 +45,8 @@ impl Theme {
         scale: u16,
         force_svg: bool,
     ) -> Option<PathBuf> {
-        self.match_size(file, size, scale)
-            .find_map(|path| try_build_icon_path(name, path, force_svg))
+        let dirs: Vec<PathBuf> = self.match_size(file, size, scale).collect();
+        pick_icon(name, &dirs, force_svg)
     }
 
     fn match_size<'a>(
@@ -70,9 +70,7 @@ impl Theme {
         scale: u16,
         force_svg: bool,
     ) -> Option<PathBuf> {
-        self.closest_match_size(file, size, scale)
-            .iter()
-            .find_map(|path| try_build_icon_path(name, path, force_svg))
+        pick_icon(name, &self.closest_match_size(file, size, scale), force_svg)
     }
 
     fn closest_match_size(&self, file: &str, size: u16, scale: u16) -> Vec<PathBuf> {
@@ -89,7 +87,7 @@ impl Theme {
             })
             .collect();
 
-        dirs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        dirs.sort_by_key(|(_, a)| *a);
 
         dirs.iter()
             .map(|(dir, _)| dir)
@@ -100,6 +98,18 @@ impl Theme {
 
     fn path(&self) -> &PathBuf {
         &self.path.0
+    }
+}
+
+fn pick_icon(name: &str, dirs: &[PathBuf], force_svg: bool) -> Option<PathBuf> {
+    let svg = || dirs.iter().find_map(|p| try_build_svg(name, p));
+    let png = || dirs.iter().find_map(|p| try_build_png(name, p));
+    let xmp = || dirs.iter().find_map(|p| try_build_xmp(name, p));
+
+    if force_svg {
+        svg().or_else(png).or_else(xmp)
+    } else {
+        png().or_else(svg).or_else(xmp)
     }
 }
 
@@ -123,32 +133,20 @@ fn try_build_svg<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
     let path = path.as_ref();
     let svg = path.join(format!("{name}.svg"));
 
-    if svg.exists() {
-        Some(svg)
-    } else {
-        None
-    }
+    if svg.exists() { Some(svg) } else { None }
 }
 
 fn try_build_png<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
     let path = path.as_ref();
     let png = path.join(format!("{name}.png"));
 
-    if png.exists() {
-        Some(png)
-    } else {
-        None
-    }
+    if png.exists() { Some(png) } else { None }
 }
 
 fn try_build_xmp<P: AsRef<Path>>(name: &str, path: P) -> Option<PathBuf> {
     let path = path.as_ref();
     let xmp = path.join(format!("{name}.xmp"));
-    if xmp.exists() {
-        Some(xmp)
-    } else {
-        None
-    }
+    if xmp.exists() { Some(xmp) } else { None }
 }
 
 // Iter through the base paths and get all theme directories
@@ -219,8 +217,6 @@ impl Theme {
 #[cfg(test)]
 mod test {
     use crate::THEMES;
-    use speculoos::prelude::*;
-    use std::path::PathBuf;
 
     #[test]
     fn get_one_icon() {
@@ -235,26 +231,28 @@ mod test {
     }
 
     #[test]
-    fn should_get_png_first() {
-        let themes = THEMES.get("hicolor").unwrap();
-        let icon = themes.iter().find_map(|t| {
-            let file = crate::theme::read_ini_theme(&t.index);
-            t.try_get_icon_exact_size(file.as_str(), "blueman", 24, 1, true)
-        });
-        assert_that!(icon).is_some().is_equal_to(PathBuf::from(
-            "/usr/share/icons/hicolor/22x22/apps/blueman.png",
-        ));
-    }
-
-    #[test]
-    fn should_get_svg_first() {
+    fn should_get_png() {
         let themes = THEMES.get("hicolor").unwrap();
         let icon = themes.iter().find_map(|t| {
             let file = crate::theme::read_ini_theme(&t.index);
             t.try_get_icon_exact_size(file.as_str(), "blueman", 24, 1, false)
         });
-        assert_that!(icon).is_some().is_equal_to(PathBuf::from(
-            "/usr/share/icons/hicolor/22x22/apps/blueman.png",
-        ));
+        assert!(
+            icon.as_ref()
+                .is_some_and(|p| p.ends_with("share/icons/hicolor/22x22/apps/blueman.png"))
+        );
+    }
+
+    #[test]
+    fn should_get_svg() {
+        let themes = THEMES.get("hicolor").unwrap();
+        let icon = themes.iter().find_map(|t| {
+            let file = crate::theme::read_ini_theme(&t.index);
+            t.try_get_icon_exact_size(file.as_str(), "blueman", 24, 1, true)
+        });
+        assert!(
+            icon.as_ref()
+                .is_some_and(|p| p.ends_with("share/icons/hicolor/scalable/apps/blueman.svg"))
+        );
     }
 }
